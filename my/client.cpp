@@ -13,7 +13,7 @@
 #include <errno.h>
 #include <map>
 #include<arpa/inet.h>
-//#include "threadpool.h"
+#include "threadpool.h"
 using namespace std;
 
 
@@ -21,14 +21,23 @@ class Monitored_event{
 public:
     /*Unix套接字读缓冲区有三种状态:OPEN请求,CLOSE请求,重复打开同一个文件*/
     enum Request_State{OPEN_SAVE, CLOSE_GET, REPEAT_FILE};
-
+    /*解析有两种状态，一种是解析头部，另一种是还有文件内容*/
+    enum Parse_State{HEAD, CONTENT};
 public:
     static const int READ_BUF_SIZE = 2048;
     static const int WRITE_BUF_SIZE = 1024;
+private:
     static int epfd;//所有被监测的事件共同使用一个epoll注册事件
     static int i_socketfd;//所有被监测的事件共同使用一个远程连接
     int u_socketfd;//Unix套接字
     static int Monitored_number;//所有被监测事件的个数
+     
+    Parse_State p_state;//解析头部和内容,状态转移标志
+
+    char *line_buf;//读取到的每一行的头指针
+    int now_index;//当前解析了多少字节
+    int file_length;//文件的大小
+    map<string, int> repeat_path;//查看是否是重复文件
 public:
     /*由于之后用的是类数组形式,初始化类成员统一在init成员函数中进行*/
     Monitored_event(){}
@@ -42,20 +51,20 @@ public:
     void close_monitored();
     
     /*分析被监测事件的类型,线程池轮询事件队列的接口*/
-    void do_process(){}
+    void do_process();
     
     /*Unix写到hook.c进程函数*/
-   // bool u_write(){}
+    bool u_write();
     
     /*与远端服务器连接写函数*/
-    //bool i_write();
+    bool i_write();
     
     /**!!!划重点！由于用的是ET非阻塞模式，所以读取的时候一定要保证读到EAGAIN为止**/
     /*Unix读取hook.c进程发送包函数*/
-   // bool u_read();
+    bool u_read();
     
     /*与远端服务器连接的函数*/
-    //bool i_read();
+    bool i_read();
 
 private:
     /*unix套接字的读取缓冲区*/ 
@@ -74,14 +83,17 @@ private:
     /*因为是EPOLLNESHOT,所以每次要修改epoll事件表*/
     void Monitored_modfd(int epfd, int fd, int ev);
     
+    /*获取每行并且解析*/
+    bool get_line(const char *test_buf);
+
     /*通过解析Unix套接字的读缓冲区,判断是open调用还是close调用被劫持*/
     Request_State parse_read_buf();
 
     /*填写向服务器发送的写缓冲区,根据请求类型进行填写响应包*/
-    //void fill_swrite_buf(Request_State state);
+    void fill_swrite_buf(Request_State state);
     
     /*填写Unix的发送缓冲区,根据请求填写响应包*/
-   // void fill_uwrite_buf(Request_State state);
+    void fill_uwrite_buf(Request_State state);
 
 //private:
 
@@ -91,12 +103,14 @@ private:
 int Monitored_event::epfd=-1;//所有被监测的事件共同使用一个epoll注册事件
 int Monitored_event::i_socketfd=-1;//所有被监测的事件共同使用一个远程连接
 int Monitored_event:: Monitored_number=0;//所有被监测事件的个数
+
 void Monitored_event :: init(int ed, int i_s, int u_s)
 {
     epfd = ed;
     i_socketfd = i_s;
     u_socketfd = u_s;
     /*以下包括其他类成员的初始化*/
+    p_state = HEAD;
 }
 
 void Monitored_event::close_monitored()
@@ -113,25 +127,67 @@ void Monitored_event:: Monitored_modfd(int epfd, int fd, int ev)
     epoll_ctl(epfd,EPOLL_CTL_MOD,fd,&event);
 }
 
+/*只获取协议包的包头*/
+bool Monitored_event :: u_read()
+{
+    int flag = 0;
+    int k=0;
+    char ch;
+    while(read(u_socketfd, &ch, 1) != 0)
+    {
+        unix_read_buf[k] = ch;
+        if(k>4 && unix_read_buf[k]=='\n' && unix_read_buf[k-1]=='\r' && unix_read_buf[k-2]=='\n' && unix_read_buf[k-3]=='\r')
+        {
+            flag = 1;
+            break;
+        }
+        k++;
+    }
+    unix_read_buf[strlen(unix_read_buf)+1] = '\0';
+    if(flag)
+    {
+        return true;
+    }
+    else{
+        return false;
+    }
+}
+
+/*解析读取缓冲区的内容,只解析头部*/
+Monitored_event::Request_State Monitored_event::parse_read_buf()
+{
+    Request_State method;
+    char *buf = unix_read_buf;
+    /*每次获取每行成功*/
+    if( get_line(buf) )
+    {
+        /*监测是OPEN还是CLOSE或者是重复文件*/
+
+    }
+/*暂时返回该状态*/
+ return OPEN_SAVE;
+}
+
+
 /*Unix事件的线程池接口函数*/
-/*void Monitored_event::do_process()
-{*/
+void Monitored_event::do_process()
+{
     /*解析进程发送的包,OPEN相当于向服务器申请备份,CLOSE属于向服务器申请取备份*/
-  // Request_State ret = parse_read_buf();
+    Request_State ret = parse_read_buf();
    
    /*如果为重复open，需要直接给Unix套接字返回信息,不向服务器发送信息*/
-   /*if(ret != REPEAT_FILE)
-   {*/
+   if(ret != REPEAT_FILE)
+   {
        /*填写Unix套接字响应请求类型*/
-     /*   fill_uwrite_buf(ret);
-   }*/
+        fill_uwrite_buf(ret);
+   }
    
    /*如果不重复,根据是OPEN请求还是CLOSE请求发送给服务器*/
-  /*else{
+  else{
             fill_swrite_buf(ret);
             Monitored_modfd(epfd, i_socketfd, EPOLLOUT);
    }
-}*/
+}
 
 
 /*设置为非阻塞模式*/
@@ -169,7 +225,8 @@ void modfd(int epfd, int fd, int ev)
 int main()
 {
     /*创建线程池指针*/
- //   threadpool< Monitored_event >* monitored_pool = NULL;
+    threadpool< Monitored_event >* monitored_pool = NULL;
+    monitored_pool = new threadpool<Monitored_event>;
     Monitored_event my_monitored_event[1000];
     /*创建Unix套接字,绑定Unix套接字并且建立监听套接字*/
     struct sockaddr_un myserver;
@@ -209,11 +266,10 @@ int main()
     }
     myclient.sin_family = AF_INET;
     myclient.sin_port = htons(8888);
-    const char *ip="192.168.3.87";
-    inet_pton(AF_INET, ip, (void *)&myclient.sin_addr);
-    cout << "****&&&&\n";
+    /*const char *ip="192.168.3.87";
+    inet_pton(AF_INET, ip, (void *)&myclient.sin_addr);*/
+    myclient.sin_addr.s_addr = htons(INADDR_ANY);
     ret  = connect(i_socketfd,(struct sockaddr*)&myclient,sizeof(myclient));
-    cout << "&&&&\n";
     if(ret < 0)
     {
         cout << "connect is failt\n";
@@ -270,7 +326,7 @@ int main()
                 /*若服务器断开链接，则监测系统不允许打开任何文件*/
                 if(now_sockfd == i_socketfd)//此处服务端不可到达,需要让本地被监测的open调用都失败
                 {
-                    timeout = 3000;
+                    //timeout = 3000;
                     /*重新连接的接口*/
                     cout << "i_socketfd is errno\n";
                 }
@@ -282,21 +338,21 @@ int main()
             /*epoll事件表中有u_socketfd读取事件，或者是i_socketfd有读取时间*/
             else if(events[i].events & EPOLLIN)//可以读取
             {
-               /* if(now_sockfd == i_socketfd)//i_socketfd网络套接字可读取,处理服务端返回的信息
+               if(now_sockfd == i_socketfd)//i_socketfd网络套接字可读取,处理服务端返回的信息
                 {
                     if(my_monitored_event[now_sockfd].i_read())//读取成功，备份或者下载文件
                     {
                         
+                        
                     }
-                }*/
-                //u_socketfd套接字有可读事件,
-                /*else{
+                }
+                /*u_socketfd套接字有可读事件,并且读入将内容读入缓冲区*/
+                else{
                         if( my_monitored_event[now_sockfd].u_read() ) //读取成功,加入任务列表
                         {
                             monitored_pool->addjob(my_monitored_event+now_sockfd);
                         }
-
-                }*/
+                }
 
             }
             /*epoll注册表中，有可写入事件*/
@@ -306,18 +362,18 @@ int main()
                 if(now_sockfd == i_socketfd)
                 {
                     /*写入服务器成功*/
-                  /*  if(my_monitored_event[now_sockfd].i_write())
+                    if(my_monitored_event[now_sockfd].i_write())
                     {
 
-                    }*/
+                    }
                 }
                 /*向被监控进程发送返回状态*/
                 else{
                     /*向被监控进程返回状态成功*/
-                    /*if(my_monitored_event[now_sockfd].u_write())
+                    if(my_monitored_event[now_sockfd].u_write())
                     {
 
-                    }*/
+                    }
                 }
 
             }
