@@ -2,7 +2,7 @@
 
 //启动hook函数的系统调用:open或者为close
 
-enum TYPE_HOOK{OPEN_CALL=0,CLOSE_CALL};
+enum TYPE_HOOK{SAVE=0,GET};
 
 // * open函数调备份成功,cloe函数取备份成功，
 // * open调用备份失败,close调用取备份失败,

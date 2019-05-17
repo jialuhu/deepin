@@ -48,23 +48,21 @@ public:
     void init(int ed, int i_s, int u_s);
 
     /*关闭连接(考虑之中，因为不能关闭网络套接字和Unix套接字)*/
-    void close_monitored();
-    
+    void close_monitored();   
     /*分析被监测事件的类型,线程池轮询事件队列的接口*/
     void do_process();
     
     /*Unix写到hook.c进程函数*/
-    bool u_write();
+    bool u_write(){}
     
     /*与远端服务器连接写函数*/
-    bool i_write();
+    bool i_write(){}
     
     /**!!!划重点！由于用的是ET非阻塞模式，所以读取的时候一定要保证读到EAGAIN为止**/
     /*Unix读取hook.c进程发送包函数*/
     bool u_read();
-    
     /*与远端服务器连接的函数*/
-    bool i_read();
+    bool i_read(){}
 
 private:
     /*unix套接字的读取缓冲区*/ 
@@ -82,19 +80,14 @@ private:
 private:
     /*因为是EPOLLNESHOT,所以每次要修改epoll事件表*/
     void Monitored_modfd(int epfd, int fd, int ev);
-    
     /*获取每行并且解析*/
     bool get_line(const char *test_buf);
-
     /*通过解析Unix套接字的读缓冲区,判断是open调用还是close调用被劫持*/
     Request_State parse_read_buf();
-
     /*填写向服务器发送的写缓冲区,根据请求类型进行填写响应包*/
     void fill_swrite_buf(Request_State state);
-    
     /*填写Unix的发送缓冲区,根据请求填写响应包*/
     void fill_uwrite_buf(Request_State state);
-
 //private:
 
 };
@@ -266,9 +259,9 @@ int main()
     }
     myclient.sin_family = AF_INET;
     myclient.sin_port = htons(8888);
-    /*const char *ip="192.168.3.87";
-    inet_pton(AF_INET, ip, (void *)&myclient.sin_addr);*/
-    myclient.sin_addr.s_addr = htons(INADDR_ANY);
+    const char *ip="172.20.10.2";
+    inet_pton(AF_INET, ip, (void *)&myclient.sin_addr);
+//    myclient.sin_addr.s_addr = htons(INADDR_ANY);
     ret  = connect(i_socketfd,(struct sockaddr*)&myclient,sizeof(myclient));
     if(ret < 0)
     {

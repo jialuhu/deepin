@@ -56,12 +56,12 @@ enum MONITOR_STATE Unix_Socket(enum TYPE_HOOK types, char *pathname)
     if(type_call == OPEN_CALL)
     {
         /*open函数调用*/
-        sprintf(buf,"OPEN %s\r\n",pathname);
+        sprintf(buf,"SAVE %s\r\n",pathname);
     }
     else{
 
         /*close函数调用*/
-        sprintf(buf, "CLOS %s\r\n",pathname);
+        sprintf(buf, "GET %s\r\n",pathname);
     }
     buf[strlen(buf)+1] = '\0';
     printf("%s\n",buf);
@@ -75,34 +75,16 @@ enum MONITOR_STATE Unix_Socket(enum TYPE_HOOK types, char *pathname)
     }
     printf("%d字节已经发送\n",red); 
     
-    /*char buff[245];
     int r;
-    r=read(conn_socket,buff, 245);
-    printf("非阻塞:r=%d\n",r);*/
-    /*
-     * while(1)
-     * {
-     *      sleep(1);
-     * }
-     * */
-    /*Unix套接字设置为非阻塞，所以要轮询处理*/ 
-    while(1)
-    {
-        char buff[245];
-        int r;
-        bzero(buff,245);
-        if((r=read(conn_socket,buff, 245)) != 0)
-        {
-            buff[strlen(buff)+1] = '\0';
-            printf("读取到了:%d字节数\n",r);
-            printf("读取到监测系统返回的包:%s\n",buff);
-            monitor_state = prase_monitor_package(buff);
-            break;
-        }
-    }
+    char buff[245];
+    r = read(conn_socket, buff, 245);
+    buff[strlen(buff)+1] = '\0';
+    printf("读取到了:%d字节数\n",r);
+    printf("读取到监测系统返回的包:%s\n",buff);
+    monitor_state = prase_monitor_package(buff);
+    
     close(conn_socket);
     return monitor_state;
-    //return OPEN_SAVE_OK;
 }
 
 
@@ -173,6 +155,7 @@ int open(const char *pathname, int flags, ...)
         /*查看监测系统是否正常备份或者取到备份，若备份和取备份失败，将errno设置为无权限操作错误,直接返回-1*/ 
         if( monitor_state == OPEN_SAVE_OK || monitor_state==CLOSE_GET_OK )//监测系统服务器备份修改和取备份修改成功
         {
+            printf("正常备份以及取备份\n");
             if(parameter)//判断是几个参数的系统调用
             {
                 return old_open(pathname, flags, mode);

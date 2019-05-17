@@ -16,7 +16,7 @@
 #include "threadpool.h"
 using namespace std;
 
-
+static int UNIX;
 class Monitored_event{
 public:
     /*Unix套接字读缓冲区有三种状态:OPEN请求,CLOSE请求,重复打开同一个文件*/
@@ -33,11 +33,12 @@ private:
     static int Monitored_number;//所有被监测事件的个数
      
     Parse_State p_state;//解析头部和内容,状态转移标志
-
+    const char *mac_addr;
     char *line_buf;//读取到的每一行的头指针
     int now_index;//当前解析了多少字节
-    int file_length;//文件的大小
-    map<string, int> repeat_path;//查看是否是重复文件
+    long int file_length;//文件的大小
+    string file_name;//文件名称
+    static map<string, int> repeat_path;//查看是否是重复文件
 public:
     /*由于之后用的是类数组形式,初始化类成员统一在init成员函数中进行*/
     Monitored_event(){}
@@ -57,7 +58,7 @@ public:
     bool u_write(){return true;}
     
     /*与远端服务器连接写函数*/
-    bool i_write(){return true;}
+    bool i_write();
     
     /**!!!划重点！由于用的是ET非阻塞模式，所以读取的时候一定要保证读到EAGAIN为止**/
     /*Unix读取hook.c进程发送包函数*/
@@ -82,6 +83,9 @@ private:
     /*因为是EPOLLNESHOT,所以每次要修改epoll事件表*/
     void Monitored_modfd(int epfd, int fd, int ev);
     
+    /*发送文件函数*/
+    int send_n(int fd,char *buffer,int n);
+    
     /*获取每行并且解析*/
     bool get_line(const char *test_buf){return true;}
 
@@ -89,18 +93,43 @@ private:
     Request_State parse_read_buf();
 
     /*填写向服务器发送的写缓冲区,根据请求类型进行填写响应包*/
-    void fill_swrite_buf(Request_State state){}
-    
+    void fill_swrite_buf(Request_State state);
     /*填写Unix的发送缓冲区,根据请求填写响应包*/
     void fill_uwrite_buf(Request_State state){}
 //private:
 
 };
-
-
+map<string, int> Monitored_event::repeat_path = map<string, int>();//map初始化
 int Monitored_event::epfd=-1;//所有被监测的事件共同使用一个epoll注册事件
 int Monitored_event::i_socketfd=-1;//所有被监测的事件共同使用一个远程连接
 int Monitored_event:: Monitored_number=0;//所有被监测事件的个数
+
+
+
+int Monitored_event::send_n(int fd,char *buffer,int n)
+{
+    cout << "jinru\n";
+    int num = 0;
+    while ( num < n ) {
+        cout << "***\n";
+        int t = send( fd,&buffer[num],n - num,0 );
+        if ( t < 0 ) {
+            if( errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK ) {
+                cout << "send_n send err" << endl;
+                continue;
+            } else if ( t == 0 ) {
+                cout << "server close" << endl;
+                return -1;
+            } else {
+                num += t;
+            }
+        }
+    }
+    cout << "number: " << num << endl;
+    return num;
+}
+
+
 
 void Monitored_event :: init(int ed, int i_s, int u_s)
 {
@@ -108,7 +137,7 @@ void Monitored_event :: init(int ed, int i_s, int u_s)
     i_socketfd = i_s;
     u_socketfd = u_s;
     /*以下包括其他类成员的初始化*/
-    p_state = HEAD;
+    ++Monitored_number;
 }
 
 void Monitored_event::close_monitored()
@@ -125,15 +154,53 @@ void Monitored_event:: Monitored_modfd(int epfd, int fd, int ev)
     epoll_ctl(epfd,EPOLL_CTL_MOD,fd,&event);
 }
 
+/*填写向服务器发送的写缓冲区,根据请求类型进行填写响应包*/
+void Monitored_event::fill_swrite_buf(Request_State state){
+    switch(state)
+    {
+        case OPEN_SAVE:
+        {
+
+            mac_addr="mac_addr";
+            sprintf(unix_write_buf,"SAVE %s %s\r\nfilesize: %ld\r\n\r\n",file_name.c_str(),mac_addr,file_length);
+            unix_write_buf[strlen(unix_write_buf)+1] = '\0';
+            cout << "unix_write_buf: \n" << unix_write_buf << endl;
+            break;
+        }
+        case CLOSE_GET:
+        {
+            mac_addr = "mac_addr";
+            sprintf(unix_write_buf,"GET %s %s\r\nfilesize: %ld\r\n\r\n", file_name.c_str(), mac_addr, file_length);
+            unix_write_buf[strlen(unix_write_buf)+1] = '\0';
+            break;
+        }
+    }
+    cout << "%%%%:" << unix_write_buf << endl;
+}
+
+/*TCP套接字发送*/
+bool Monitored_event::i_write()
+{
+    cout << "unix_write_buf&&: " << unix_write_buf << endl;
+    int r = send_n(i_socketfd,unix_write_buf, strlen(unix_write_buf));
+    cout << "unix_write_buf&&: " << unix_write_buf << endl;
+    if (r < 0) {
+        cout << "send_n errno\n";
+        return false;
+    }
+    cout << "r=" << r << endl;
+    return true;
+
+}
 /*只获取协议包的包头*/
 bool Monitored_event :: u_read()
 {
-    int flag = 0;
+    int flag = 1;
     int k=0;
-    char ch;
-    while(read(u_socketfd, &ch, 1) != 0)
+    char ch[1];
+    while(read(u_socketfd, ch, 1) > 0)
     {
-        unix_read_buf[k] = ch;
+        unix_read_buf[k] = ch[0];
         if(k>4 && unix_read_buf[k]=='\n' && unix_read_buf[k-1]=='\r' && unix_read_buf[k-2]=='\n' && unix_read_buf[k-3]=='\r')
         {
             flag = 1;
@@ -154,16 +221,31 @@ bool Monitored_event :: u_read()
 /*解析读取缓冲区的内容,只解析头部*/
 Monitored_event::Request_State Monitored_event::parse_read_buf()
 {
-    Request_State method;
-    char *buf = unix_read_buf;
-    /*每次获取每行成功*/
-    if( get_line(buf) )
+    cout << "unix_read_buf:" << unix_read_buf << endl;
+    string read_package(unix_read_buf);
+    string type;
+    /*第一个空格分割*/
+    int first = read_package.find(' ');
+    
+    /*OPEN调用还是CLOSE*/
+    type = read_package.substr(0, first);
+    /*截取文件的绝对路径，不包括\r\n*/
+    file_name = read_package.substr(first+1,read_package.size()-first-5);
+    
+    /*查看文件是否是重复文件*/
+    if(repeat_path.find(file_name) == repeat_path.end())
     {
-        /*监测是OPEN还是CLOSE或者是重复文件*/
-
+        repeat_path.insert(pair<string ,int>(file_name, Monitored_number)); 
+        if(type=="OPEN")
+        {
+            return OPEN_SAVE;
+        }
+        else if(type=="CLOSE")
+        {
+            return CLOSE_GET;
+        }
     }
-/*暂时返回该状态*/
- return OPEN_SAVE;
+    return REPEAT_FILE;
 }
 
 
@@ -174,7 +256,7 @@ void Monitored_event::do_process()
     Request_State ret = parse_read_buf();
    
    /*如果为重复open，需要直接给Unix套接字返回信息,不向服务器发送信息*/
-   if(ret != REPEAT_FILE)
+   if(ret == REPEAT_FILE)
    {
        /*填写Unix套接字响应请求类型*/
         fill_uwrite_buf(ret);
@@ -183,6 +265,7 @@ void Monitored_event::do_process()
    /*如果不重复,根据是OPEN请求还是CLOSE请求发送给服务器*/
   else{
             fill_swrite_buf(ret);
+            UNIX = u_socketfd;
             Monitored_modfd(epfd, i_socketfd, EPOLLOUT);
    }
 }
@@ -263,9 +346,9 @@ int main()
         return 0;
     }
     myclient.sin_family = AF_INET;
-    myclient.sin_port = htons(8888);
-    const char *ip="172.20.10.2";
-    inet_pton(AF_INET, ip, (void *)&myclient.sin_addr);
+    myclient.sin_port = htons(8887);
+    /*const char *ip="192.168.3.87";
+    inet_pton(AF_INET, ip, (void *)&myclient.sin_addr);*/
     //myclient.sin_addr.s_addr = htons(INADDR_ANY);
     ret  = connect(i_socketfd,(struct sockaddr*)&myclient,sizeof(myclient));
     if(ret < 0)
@@ -346,8 +429,10 @@ int main()
                 }
                 /*u_socketfd套接字有可读事件,并且读入将内容读入缓冲区*/
                 else{
+                        cout << "Unix read!\n";
                         if( my_monitored_event[now_sockfd].u_read() ) //读取成功,加入任务列表
                         {
+                            cout << "unix read!\n";
                             monitored_pool->addjob(my_monitored_event+now_sockfd);
                         }
                 }
@@ -359,10 +444,12 @@ int main()
                 /*向服务器发送请求，备份或者取备份*/
                 if(now_sockfd == i_socketfd)
                 {
+                    cout << "i_socketfd is write\n";
                     /*写入服务器成功*/
-                    if(my_monitored_event[now_sockfd].i_write())
+                    if(my_monitored_event[UNIX].i_write())
                     {
-
+                        cout << "send is successful! UNIX: : " << UNIX << endl;
+                        exit(0);
                     }
                 }
                 /*向被监控进程发送返回状态*/
